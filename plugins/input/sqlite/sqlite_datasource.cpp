@@ -101,9 +101,65 @@ sqlite_datasource::sqlite_datasource(parameters const& params, bool bind)
     else
         dataset_name_ = *file;
 
+    // Populate init_statements_
+    //   1. Build attach database statements from the "attachdb" parameter
+    //   2. Add explicit init statements from "initdb" parameter
+    // Note that we do some extra work to make sure that any attached
+    // databases are relative to directory containing dataset_name_.  Sqlite
+    // will default to attaching from cwd.  Typicaly usage means that the
+    // map loader will produce full paths here.
+    boost::optional<std::string> attachdb = params_.get<std::string>("attachdb");
+    if (attachdb) {
+       parse_attachdb(*attachdb);
+    }
+    
+    boost::optional<std::string> initdb = params_.get<std::string>("initdb");
+    if (initdb) {
+       init_statements_.push_back(*initdb);
+    }
+    
     if (bind)
     {
         this->bind();
+    }
+}
+
+void sqlite_datasource::parse_attachdb(std::string const& attachdb) {
+    boost::char_separator<char> sep(",");
+    boost::tokenizer<boost::char_separator<char> > tok(attachdb, sep);
+    
+    // The attachdb line is a comma sparated list of
+    //    [dbname@]filename
+    for (boost::tokenizer<boost::char_separator<char> >::iterator beg = tok.begin(); 
+         beg != tok.end(); ++beg)
+    {
+        std::string const& spec(*beg);
+        std::string dbname;
+        std::string filename;
+        size_t atpos=spec.find('@');
+        
+        // See if it contains an @ sign
+        if (atpos==spec.npos) {
+            throw datasource_exception("attachdb parameter has syntax dbname@filename[,...]");
+        }
+        
+        // Break out the dbname and the filename
+        dbname=boost::trim_copy(spec.substr(0, atpos));
+        filename=boost::trim_copy(spec.substr(atpos+1));
+        
+        // Normalize the filename and make it relative to dataset_name_
+        if (filename.compare(":memory:")!=0) {
+            boost::filesystem::path child_path(filename);
+            if (!child_path.has_root_directory() && !child_path.has_root_name()) {
+                // It is a relative path.  Fix it.
+                boost::filesystem::path absolute_path(dataset_name_);
+                absolute_path.remove_filename();
+                filename=absolute_path.string() + filename;
+            }
+        }
+        
+        // And add an init_statement_
+        init_statements_.push_back("attach database '" + filename + "' as " + dbname);
     }
 }
 
@@ -116,6 +172,16 @@ void sqlite_datasource::bind() const
           
     dataset_ = new sqlite_connection (dataset_name_);
 
+    // Execute init_statements_
+    for (std::vector<std::string>::const_iterator iter=init_statements_.begin(); iter!=init_statements_.end(); ++iter)
+    {
+#ifdef MAPNIK_DEBUG
+        std::clog << "Sqlite Plugin: Execute init sql: " << *iter << std::endl;
+#endif
+        dataset_->execute(*iter);
+    }
+         
+    
     if(geometry_table_.empty())
     {
         geometry_table_ = mapnik::table_from_sql(table_);
@@ -262,18 +328,20 @@ void sqlite_datasource::bind() const
     
     if (use_spatial_index_)
     {
-        std::ostringstream s;
-        s << "SELECT COUNT (*) FROM sqlite_master";
-        s << " WHERE LOWER(name) = LOWER('idx_" << geometry_table_ << "_" << geometry_field_ << "')";
-        boost::scoped_ptr<sqlite_resultset> rs (dataset_->execute_query (s.str()));
-        if (rs->is_valid () && rs->step_next())
-        {
-            use_spatial_index_ = rs->column_integer (0) == 1;
+        if (index_table_.size() == 0) {
+            // Generate implicit index_table name
+            index_table_ = "idx_" + geometry_table_ + "_" + geometry_field_;
         }
-
-        if (!use_spatial_index_)
-           std::clog << "Sqlite Plugin: spatial index not found for table '"
-             << geometry_table_ << "'" << std::endl;
+        
+        std::ostringstream s;
+        s << "SELECT pkid,xmin,xmax,ymin,ymax FROM " << index_table_;
+        s << " LIMIT 0";
+        if (dataset_->execute_with_code(s.str()) != SQLITE_OK)
+        {
+            use_spatial_index_ = false;
+            std::clog << "Sqlite Plugin: No suitable spatial index found for "
+                << geometry_table_ << " (checked " << s.str() << ")" << std::endl;
+        }
     }
 
     if (metadata_ != "" && !extent_initialized_)
