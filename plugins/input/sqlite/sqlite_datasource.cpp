@@ -62,6 +62,8 @@ sqlite_datasource::sqlite_datasource(parameters const& params, bool bind)
      metadata_(*params_.get<std::string>("metadata","")),
      geometry_table_(*params_.get<std::string>("geometry_table","")),
      geometry_field_(*params_.get<std::string>("geometry_field","")),
+     // index_table_ defaults to "idx_{geometry_table_}_{geometry_field_}"
+     index_table_(*params_.get<std::string>("index_table","")),
      // http://www.sqlite.org/lang_createtable.html#rowid
      key_field_(*params_.get<std::string>("key_field","rowid")),
      row_offset_(*params_.get<int>("row_offset",0)),
@@ -329,7 +331,9 @@ void sqlite_datasource::bind() const
     if (use_spatial_index_)
     {
         if (index_table_.size() == 0) {
-            // Generate implicit index_table name
+            // Generate implicit index_table name - need to do this after
+            // we have discovered meta-data or else we don't know the column
+            // name
             index_table_ = "idx_" + geometry_table_ + "_" + geometry_field_;
         }
         
@@ -366,7 +370,7 @@ void sqlite_datasource::bind() const
     {
         std::ostringstream s;
         s << "SELECT MIN(xmin), MIN(ymin), MAX(xmax), MAX(ymax) FROM " 
-        << "idx_" << geometry_table_ << "_" << geometry_field_;
+        << index_table_;
         boost::scoped_ptr<sqlite_resultset> rs (dataset_->execute_query (s.str()));
         if (rs->is_valid () && rs->step_next())
         {
@@ -449,7 +453,7 @@ featureset_ptr sqlite_datasource::features(query const& q) const
         {
            std::ostringstream spatial_sql;
            spatial_sql << std::setprecision(16);
-           spatial_sql << " WHERE " << key_field_ << " IN (SELECT pkid FROM idx_" << geometry_table_ << "_" << geometry_field_;
+           spatial_sql << " WHERE " << key_field_ << " IN (SELECT pkid FROM " << index_table_;
            spatial_sql << " WHERE xmax>=" << e.minx() << " AND xmin<=" << e.maxx() ;
            spatial_sql << " AND ymax>=" << e.miny() << " AND ymin<=" << e.maxy() << ")";
            if (boost::algorithm::ifind_first(query, "WHERE"))
@@ -513,7 +517,7 @@ featureset_ptr sqlite_datasource::features_at_point(coord2d const& pt) const
         {
            std::ostringstream spatial_sql;
            spatial_sql << std::setprecision(16);
-           spatial_sql << " WHERE " << key_field_ << " IN (SELECT pkid FROM idx_" << geometry_table_ << "_" << geometry_field_;
+           spatial_sql << " WHERE " << key_field_ << " IN (SELECT pkid FROM " << index_table_;
            spatial_sql << " WHERE xmax>=" << e.minx() << " AND xmin<=" << e.maxx() ;
            spatial_sql << " AND ymax>=" << e.miny() << " AND ymin<=" << e.maxy() << ")";
            if (boost::algorithm::ifind_first(query, "WHERE"))

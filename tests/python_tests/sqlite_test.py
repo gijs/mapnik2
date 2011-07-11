@@ -46,5 +46,13 @@ def test_attachdb_with_index():
             'create virtual table scratch.idx_attachedtest_the_geom using rtree(pkid,xmin,xmax,ymin,ymax);\n'
         )
     
+def test_attachdb_with_explicit_index():
+    ds = mapnik2.SQLite(file='../data/sqlite/world.sqlite', 
+        table='attachedtest',
+        index_table='myindex',
+        attachdb='scratch@:memory:',
+        initdb='create table scratch.attachedtest (the_geom);\n' +
+            'create virtual table scratch.myindex using rtree(pkid,xmin,xmax,ymin,ymax);\n'
+        )
     
     
